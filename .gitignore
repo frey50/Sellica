@@ -1,0 +1,15 @@
+# Secrets
+.env
+
+# Python junk
+__pycache__/
+*.pyc
+.venv/
+
+# Large Data (Don't push your massive vector files to Git)
+data/vectors.jsonl
+
+# Mac junk
+.DS_Store.env
+data/vectors.jsonl
+__pycache__/
