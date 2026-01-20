@@ -34,18 +34,20 @@ class GroqClient:
             if DEBUG_MODE:
                 latency = time.time() - start_time
                 usage = completion.usage
-                print(f"[DEBUG] Groq: Response received in {latency:.2f}s")
-                print(f"[DEBUG] Groq: Tokens used -> Input: {usage.prompt_tokens} | Output: {usage.completion_tokens}")
+                total_tokens = usage.total_tokens
                 
-                # --- FIXED DEBUGGER LINE ---
-                # We check if 'prompt_tokens_details' exists AND is not None
-                details = getattr(usage, 'prompt_tokens_details', None)
-                if details and hasattr(details, 'cached_tokens'):
-                    print(f"[DEBUG] Groq: Cache Hit: {details.cached_tokens} tokens saved! 💸")
-                else:
-                    print(f"[DEBUG] Groq: No cache hit (Prompt too small or first run).")
-
-            return answer.strip()
+                # Industrial Efficiency Calculation
+                # Let's see if the prompt is taking up more than 80% of our tokens
+                ratio = (usage.prompt_tokens / total_tokens) * 100 if total_tokens > 0 else 0
+                
+                print(f"\n{'='*20} TOKEN STATS {'='*20}")
+                print(f"📥 Input (Prompt):  {usage.prompt_tokens} tokens")
+                print(f"📤 Output (Answer): {usage.completion_tokens} tokens")
+                print(f"⚖️ Prompt Ratio:   {ratio:.1f}%")
+                print(f"⏱️ Speed:           {usage.completion_tokens / latency:.1f} tokens/sec")
+                print(f"{'='*53}\n")
+                    
+                return answer.strip()
 
         except Exception as e:
             # This caught the error last time, now it will be clean!

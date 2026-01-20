@@ -1,70 +1,64 @@
-# modules/prompt_builder.py
+import os
+import logging
 
-# modules/prompt_builder.py
+logger = logging.getLogger(__name__)
 
 class PromptBuilder:
-    def __init__(self, shop_name="Techwear Shop"):
-        self.shop_name = shop_name
-        # The 'Soul' of Sellica - Upgraded to be metadata-aware
-        self.system_base = (
-            f"You are Sellica, the expert AI assistant for {self.shop_name}. "
-            "Tone: Professional, relaxed, and helpful. "
-            "RULES:\n"
-            "1. Answer ONLY using the provided <context>.\n"
-            "2. If the user asks for a price, you MUST quote the PRICE from the context.\n"
-            "3. If no relevant info is in context, politely say you don't have that detail yet.\n"
-            "4. Language: Always reply in the same language the user uses (Uzbek, English, or Russian)."
-        )
+    def __init__(self, debug_mode=True):
+        self.debug_mode = debug_mode
 
-    def build(self, user_query, search_results, score_threshold=0.38): # Lowered threshold
-        print(f"\n[DEBUG] Builder: Processing {len(search_results)} search results...")
-
-        # 1. Filter and Format Rich Context
+    def build(self, user_query, search_results, shop_name="General Shop", score_threshold=0.32):
+        # 🛡️ 1. INITIALIZE DEFAULTS (No more UnboundLocalError)
+        content = "No details available."
+        system_base = f"You are Sellica, AI for {shop_name}. Use ONLY context. Match user language."
         relevant_blocks = []
-        for res in search_results:
-            if res.get('score', 0) >= score_threshold:
-                # We build a 'Data Block' so the AI sees the structure clearly
-                block = (
-                    f"--- ITEM [{res.get('type', 'product').upper()}] ---\n"
-                    f"ID: {res.get('id', 'N/A')}\n"
-                    f"Price: {res.get('price', 'N/A')}\n"
-                    f"English: {res.get('search_en', '')}\n"
-                    f"Uzbek: {res.get('context_uz', '')}\n"
-                )
-                relevant_blocks.append(block)
+
+        try:
+            # 2. LANGUAGE DETECTION
+            uz_keywords = ['bor', 'nima', 'qancha', 'nech', 'salom', 'mi', 'uchun']
+            is_uzbek = any(word in user_query.lower() for word in uz_keywords)
+
+            # 3. CONTEXT ASSEMBLY
+            for res in search_results:
+                try:
+                    score = res.get('score', 0)
+                    if score >= score_threshold:
+                        # Select language-specific content
+                        if is_uzbek:
+                            current_item_text = res.get('context_uz', 'Ma\'lumot yo\'q')
+                        else:
+                            current_item_text = res.get('search_en', 'No description')
+                        
+                        price = res.get('price', 'N/A')
+                        block = f"Item: {current_item_text} | Price: {price}"
+                        relevant_blocks.append(block)
+                except Exception as item_err:
+                    logger.error(f"Error processing single search result: {item_err}")
+                    continue # Keep going even if one item is broken
+
+            # 4. FINAL CONTEXT STRING
+            context_str = "\n".join(relevant_blocks) if relevant_blocks else "NO_DATA_FOUND"
+
+            # 5. FINAL COMPACT PROMPT
+            final_prompt = f"{system_base}\n\n<ctx>\n{context_str}\n</ctx>\n\nU: {user_query}\nA:"
+
+            if self.debug_mode:
+                print(f"\n--- 🛠️ PROMPT GENERATED ---")
+                print(final_prompt[:500] + "...") # Print start of prompt
+                print("---" * 10)
+
+            return final_prompt.strip()
+
+        except Exception as e:
+            logger.error(f"CRITICAL Error in PromptBuilder: {e}")
+            # Fallback prompt so the AI doesn't get a null input
+            return f"System: Error building context. Please apologize to the user. User: {user_query}"
         
-        context_str = "\n".join(relevant_blocks) if relevant_blocks else "NO_RELEVANT_DATA_FOUND"
-        
-        print(f"[DEBUG] Builder: Injected {len(relevant_blocks)} docs above {score_threshold} threshold.")
-
-        # 2. Construct the Final String (The 'Industrial' Sandwich)
-        final_prompt = f"""
-{self.system_base}
-
-<context>
-{context_str}
-</context>
-
-User Question: {user_query}
-
-Sellica's Response:
-"""
-        return final_prompt.strip()
-
 # --- STANDALONE TEST ---
 if __name__ == "__main__":
     builder = PromptBuilder()
-    
-    # Mock data to test the logic
     mock_results = [
-        {"search_en": "Delivery time", "context_uz": "2 kun ichida", "score": 0.95},
-        {"search_en": "Wrong item", "context_uz": "O'yinchoq emas", "score": 0.12} # Should be filtered out
+        {"id": "sw_01", "price": "450k", "search_en": "Warm sweater", "context_uz": "Issiq sviter", "score": 0.9},
     ]
-    
-    test_query = "Dostavka qancha vaqt?"
-    result_prompt = builder.build(test_query, mock_results)
-    
-    print("\n" + "="*50)
-    print("FINAL PROMPT PREVIEW:")
-    print("="*50)
-    print(result_prompt)
+    # Now you pass the shop name dynamically!
+    print(builder.build("Sviter nech pul?", mock_results, shop_name="Classic Cargo"))

@@ -1,15 +1,14 @@
-# Secrets
+# 🤫 SECRETS & CONFIG
 .env
-
-# Python junk
+config.py
 __pycache__/
-*.pyc
 .venv/
 
-# Large Data (Don't push your massive vector files to Git)
-data/vectors.jsonl
+# 📦 LOCAL DATA (The big one!)
+data/
+temp_vault/
+*.jsonl
+*.json
 
-# Mac junk
-.DS_Store.env
-data/vectors.jsonl
-__pycache__/
+# 🪵 LOGS
+*.log

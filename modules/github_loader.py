@@ -1,100 +1,134 @@
-"""
-GitHub Loader Module - FLATTENED VERSION
-Fetches shop data and ensures no nesting for higher productivity
-"""
-
 import requests
 import json
+import logging
 from config import GITHUB_TOKEN, DEBUG_MODE
 
+# Set up logging for this module
+logger = logging.getLogger(__name__)
 
-def load_docs(shop_name):
-    """
-    Main function to load all documents for a shop
-    Ensures all keys are TOP-LEVEL (Flattened)
-    """
-    if DEBUG_MODE:
-        print(f"\n[GitHub Loader] 🚀 Fetching data for: {shop_name}")
-    
+def list_remote_shops():
     repo_owner = "frey50"
     repo_name = "DATAINC"
-    base_path = "Datasets"
+    base_path = "Datasets" # ⚠️ DOUBLE CHECK: Is it 'Datasets' or 'datasets' on GitHub?
     
-    # 1. Fetch raw data
-    faqs_raw = _fetch_file(shop_name, "faqs.jsonl", repo_owner, repo_name, base_path)
-    products_raw = _fetch_file(shop_name, "products.jsonl", repo_owner, repo_name, base_path)
-    
-    documents = []
-    
-    # --- DEBUGGER: Check raw keys before transformation ---
-    if faqs_raw and DEBUG_MODE:
-        print(f"[GitHub Loader] 🔍 Sample FAQ keys from GitHub: {list(faqs_raw[0].keys())}")
-    
-    # 2. Process FAQs (FLATTENING)
-    for item in faqs_raw:
-        # We start with a flat dict
-        doc = {
-            "file": "faqs.jsonl",
-            "type": "faq",
-            "source_path": f"{base_path}/{shop_name}/faqs.jsonl"
-        }
-        # BRUHH: This line is the magic. It takes everything in 'item' 
-        # and puts it on the top level of 'doc'
-        doc.update(item) 
-        documents.append(doc)
-    
-    # 3. Process Products (FLATTENING)
-    for item in products_raw:
-        doc = {
-            "file": "products.jsonl",
-            "type": "product",
-            "source_path": f"{base_path}/{shop_name}/products.jsonl"
-        }
-        doc.update(item)
-        documents.append(doc)
-
-    # --- FINAL DEBUGGER: The 'Contract' Check ---
-    if DEBUG_MODE and documents:
-        print(f"[GitHub Loader] ✅ Successfully flattened {len(documents)} documents.")
-        print(f"[GitHub Loader] 🔍 Final Document Sample Keys: {list(documents[0].keys())}")
-        if 'search_en' not in documents[0]:
-            print(f"[GitHub Loader] ⚠️ WARNING: 'search_en' missing at top level!")
-    
-    return documents
-
-
-def _fetch_file(shop_name, filename, repo_owner, repo_name, base_path):
-    """Internal function to fetch and parse JSONL from GitHub"""
-    file_path = f"{base_path}/{shop_name}/{filename}"
-    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{file_path}"
-    
+    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{base_path}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3.raw"
+        "Accept": "application/vnd.github.v3+json"
     }
+
+    try:
+        response = requests.get(api_url, headers=headers, timeout=10)
+        
+        # 🛡️ HARDENING: Tell us EXACTLY why it failed
+        if response.status_code != 200:
+            error_msg = response.json().get('message', 'Unknown Error')
+            print(f"❌ [Loader] GitHub API Error ({response.status_code}): {error_msg}")
+            if response.status_code == 401:
+                print("🔑 [Check]: Your GITHUB_TOKEN might be invalid or expired.")
+            if response.status_code == 404:
+                print(f"📂 [Check]: Path '{base_path}' not found. Check uppercase/lowercase!")
+            return []
+
+        contents = response.json()
+        
+        # Filter: only keep items that are 'dir' (folders)
+        shops = [item['name'] for item in contents if item['type'] == 'dir']
+        
+        if DEBUG_MODE:
+            print(f"📂 [Loader] Discovered {len(shops)} shops: {shops}")
+            
+        return shops
+
+    except Exception as e:
+        print(f"❌ [Loader] Critical Network Error: {e}")
+        return []
+
+def load_docs(shop_id):
+    repo_owner = "frey50"
+    repo_name = "DATAINC"
+    base_path = f"Datasets/{shop_id}"
     
+    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{base_path}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
         if response.status_code != 200:
             return []
-        
-        data = []
-        for line in response.text.strip().split('\n'):
-            if line.strip():
-                data.append(json.loads(line))
-        return data
+
+        folder_contents = response.json()
+        all_documents = []
+
+        for file_info in folder_contents:
+            filename = file_info['name']
+            if filename.endswith(('.json', '.jsonl')):
+                raw_items = _fetch_raw_content(file_info['download_url'], filename)
+                
+                for item in raw_items:
+                    # 🛡️ SWISS WATCH: Ensure item is a dictionary
+                    if isinstance(item, dict):
+                        doc = {
+                            "shop_id": shop_id,
+                            "file_source": filename,
+                            "data_type": filename.split('.')[0]
+                        }
+                        doc.update(item)
+                        all_documents.append(doc)
+        return all_documents
     except Exception as e:
-        print(f"[GitHub Loader] ❌ Error: {e}")
+        print(f"❌ [Loader] load_docs error: {e}")
         return []
 
-# Test it
-if __name__ == "__main__":
-    DEBUG_MODE = True
-    print("=" * 50)
-    docs = load_docs("Techwear_shop")
+def _fetch_raw_content(download_url, filename):
+    """🛡️ HARDENED: Handles both standard JSON and JSONL"""
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3.raw"
+    }
+    try:
+        resp = requests.get(download_url, headers=headers, timeout=10)
+        if resp.status_code != 200: 
+            return []
+
+        # 🚀 SMART LOADING
+        if filename.endswith('.jsonl'):
+            data = []
+            for line in resp.text.strip().split('\n'):
+                if line.strip():
+                    data.append(json.loads(line))
+            return data
+        else:
+            # It's a standard .json file (likely a list)
+            return resp.json() 
+
+    except Exception as e:
+        print(f"❌ [Fetch Error] {filename}: {e}")
+        return []
     
-    if docs:
-        print("\n--- FINAL VERIFICATION ---")
-        # If this prints 'search_en', we won!
-        print(f"Top-level keys found: {list(docs[0].keys())}")
-        print(f"Content Check (search_en): {docs[0].get('search_en', 'MISSING')[:50]}...")
+    # --- THE ULTIMATE TEST BLOCK ---
+if __name__ == "__main__":
+    print("\n🔍 [Test] Starting Manual GitHub Scan...")
+    
+    # 1. Test the Shop List
+    shops = list_remote_shops()
+    
+    if not shops:
+        print("❌ [Test] list_remote_shops() returned an EMPTY list.")
+        print(f"👉 Check: Does 'Datasets' folder exist in repo 'frey50/DATAINC'?")
+    else:
+        print(f"✅ [Test] Found {len(shops)} shops: {shops}")
+        
+        # 2. Test Loading Docs for the first shop found
+        target_shop = shops[0]
+        print(f"🔍 [Test] Attempting to pull docs from: {target_shop}...")
+        docs = load_docs(target_shop)
+        
+        if not docs:
+            print(f"❌ [Test] Failed to load any documents from {target_shop}.")
+        else:
+            print(f"🔥 [Test] SUCCESS! Loaded {len(docs)} docs from {target_shop}.")
+            print(f"📝 Sample Data: {str(docs[0])[:200]}...")
