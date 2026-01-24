@@ -2,91 +2,95 @@ import os
 import time
 import shutil
 import asyncio
+import logging
+import json
 from modules.github_loader import load_docs
 from modules.vectorizer import DocumentVectorizer
-from modules.search import DocumentSearch # Your existing search logic
+from modules.search import DocumentSearch
+
+# Setup Logging for Industry-Level Debugging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("DataManager")
 
 class DataManager:
     def __init__(self, vault_dir="temp_vault"):
         self.vault_dir = vault_dir
-        self.registry = {} # { shop_id: {"searcher": obj, "time": float} }
-        self.vectorizer = DocumentVectorizer() # Load model ONCE in init
+        self.registry = {} # { shop_id: {"searcher": obj, "time": float, "in_use": bool} }
+        self.vectorizer = DocumentVectorizer()
+        self.locks = {} # { shop_id: asyncio.Lock } - One lock per shop
         
+        if not os.path.exists(vault_dir):
+            os.makedirs(vault_dir)
+
+    def _get_lock(self, shop_id):
+        """Ensure only one person builds/modifies a specific shop at a time."""
+        if shop_id not in self.locks:
+            self.locks[shop_id] = asyncio.Lock()
+        return self.locks[shop_id]
+
     async def get_searcher(self, shop_id):
-        # 1. Check RAM
-        if shop_id in self.registry:
-            self.registry[shop_id]["time"] = time.time()
-            return self.registry[shop_id]["searcher"]
-
-        # 2. Check Disk
-        shop_path = os.path.join(self.vault_dir, shop_id)
-        vector_file = os.path.join(shop_path, "vectors.jsonl")
+        """The Main Entry Point: Safe, Locked, and Non-Blocking."""
+        lock = self._get_lock(shop_id)
         
-        if os.path.exists(vector_file):
-            return self._load_into_ram(shop_id, vector_file)
+        async with lock: # 🛡️ RACE CONDITION SHIELD
+            # 1. Check RAM (Fastest)
+            if shop_id in self.registry:
+                logger.info(f"🚀 [RAM HIT] Serving {shop_id}")
+                self.registry[shop_id]["time"] = time.time()
+                self.registry[shop_id]["in_use"] = True
+                return self.registry[shop_id]["searcher"]
 
-        # 3. Pull from Cold Storage (GitHub)
-        return await self._build_from_scratch(shop_id, shop_path, vector_file)
+            # 2. Check Disk
+            shop_path = os.path.join(self.vault_dir, shop_id)
+            vector_file = os.path.join(shop_path, "vectors.jsonl")
+            
+            if os.path.exists(vector_file):
+                logger.info(f"📀 [DISK HIT] Loading {shop_id} into RAM")
+                return self._load_to_registry(shop_id, vector_file)
+
+            # 3. Build from Scratch (GitHub -> Vectorize)
+            return await self._build_from_scratch(shop_id, shop_path, vector_file)
 
     async def _build_from_scratch(self, shop_id, shop_path, vector_file):
-            """REAL PULL & VECTORIZE"""
-            print(f"📡 [DataManager] Initializing Birth for {shop_id}...")
-            os.makedirs(shop_path, exist_ok=True)
-            
-            # 1. Pull real docs from GitHub
-            docs = load_docs(shop_id) 
-            if not docs:
-                print(f"❌ [DataManager] GitHub folder '{shop_id}' is empty or missing.")
-                return None
-            
-            # 2. Vectorize them (This creates the vectors.jsonl on your Mac)
-            print(f"🧠 [DataManager] Vectorizing {len(docs)} documents...")
-            self.vectorizer.vectorize_documents(docs, vector_file)
-            
-            # 3. Initialize the Searcher and put in RAM
-            return self._load_to_registry(shop_id, vector_file)
+        logger.info(f"📡 [SYNC] Pulling {shop_id} from GitHub...")
+        os.makedirs(shop_path, exist_ok=True)
+        
+        # 1. Load raw docs
+        raw_docs = load_docs(shop_id)
+        if not raw_docs:
+            logger.error(f"❌ [DATA ERROR] Shop '{shop_id}' not found on GitHub.")
+            return None
+
+        # 2. SANITIZE: Filter out 'toxic' data before vectorizing
+        clean_docs = [d for d in raw_docs if self._is_valid(d)]
+        logger.info(f"🧹 [CLEAN] Kept {len(clean_docs)}/{len(raw_docs)} valid products.")
+
+        # 3. THREAD SHIELD: Run heavy math in a separate thread so the bot doesn't lag
+        logger.info(f"🧠 [VECTORS] Initializing vectorization for {shop_id}...")
+        try:
+            await asyncio.to_thread(self.vectorizer.vectorize_documents, clean_docs, vector_file)
+        except Exception as e:
+            logger.critical(f"💥 [CRASH] Vectorization failed for {shop_id}: {e}")
+            return None
+
+        return self._load_to_registry(shop_id, vector_file)
+
+    def _is_valid(self, doc):
+        """Schema Enforcement: The 'Bouncer' at the door."""
+        required = ['search_en', 'context_uz']
+        return all(key in doc and doc[key] for key in required)
 
     def _load_to_registry(self, shop_id, vector_file):
-        """REAL SEARCHER INITIALIZATION"""
-        print(f"🔋 [DataManager] Powering up Searcher for {shop_id}...")
-        
-        # Create the actual brain object
-        searcher = DocumentSearch(vector_file) 
-        
-        self.registry[shop_id] = {
-            "searcher": searcher,
-            "time": time.time()
-        }
-        return searcher
+        try:
+            searcher = DocumentSearch(vector_file)
+            self.registry[shop_id] = {
+                "searcher": searcher,
+                "time": time.time(),
+                "in_use": False 
+            }
+            return searcher
+        except Exception as e:
+            logger.error(f"❌ [IO ERROR] Failed to load searcher for {shop_id}: {e}")
+            return None
 
-    async def janitor_task(self):
-        """
-        The background loop that watches for 'dead' shops.
-        Set to 60 seconds for our test.
-        """
-        print("🧹 [Janitor] Service started. Scanning every 10 seconds...")
-        
-        while True:
-            await asyncio.sleep(10) # Check frequently during testing
-            now = time.time()
-            expired_shops = []
-
-            # Logic: Find who has been silent for too long
-            for shop_id, data in self.registry.items():
-                time_since_last_use = now - data["time"]
-                
-                if time_since_last_use > 60: # OUR 1-MINUTE TEST LIMIT
-                    expired_shops.append(shop_id)
-
-            # Logic: Kill the expired shops
-            for shop_id in expired_shops:
-                print(f"🚮 [Janitor] Shop '{shop_id}' has been inactive for 60s. Wiping...")
-                
-                # 1. Remove from RAM
-                del self.registry[shop_id]
-                
-                # 2. Remove from Disk
-                shop_path = os.path.join(self.vault_dir, shop_id)
-                if os.path.exists(shop_path):
-                    shutil.rmtree(shop_path)
-                    print(f"✅ [Janitor] Successfully deleted {shop_path}")
+  
