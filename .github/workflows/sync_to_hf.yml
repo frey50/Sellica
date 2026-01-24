@@ -12,13 +12,14 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+          
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # The robot needs to know who it is
-          git config --global user.email "bot@github.com"
-          git config --global user.name "GitHub Action"
+          # 1. Force the robot to recognize the 'telegram_bot' branch
+          git checkout telegram_bot
           
-          # This is the magic line - replace exactly as shown
-          git push --force https://Frey500:$HF_TOKEN@huggingface.co/spaces/Frey500/SELLICA telegram_bot:main
+          # 2. Map the local 'telegram_bot' to the remote 'main'
+          # We use the full reference path to stop the 'refspec' error
+          git push --force https://Frey500:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Frey500/SELLICA telegram_bot:main
