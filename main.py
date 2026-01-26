@@ -29,30 +29,27 @@ safety_guard = SafetyService()
 async def start_background_tasks(application):
     """🧹 Starts the Janitor Service with absolute precision."""
     try:
-        # Pull the bot engine instance
         sellica = application.bot_data['sellica']
-        
-        # 🔥 SYNCED VAULT: Use the path from config.py
         vault_dir = config.TEMP_VAULT
 
-        # 🔥 THE TITANIUM WIRING:
-        # We pass the Shop Registry and the Safety Guard to the Janitor
+        # 🌍 READ FROM ENV (with safe defaults)
+        j_interval = int(os.getenv("JANITOR_INTERVAL", "30"))
+        j_ttl = int(os.getenv("JANITOR_TTL", "900")) # 900s = 15m
+
+        # 🔥 THE TITANIUM WIRING (Updated to use variables):
         janitor = JanitorService(
             registry=sellica.manager.registry, 
             vault_dir=vault_dir,
             safety_service=safety_guard, 
-            interval=5,  # ⚡ FAST PATROL: Every 5s for testing
-            ttl=15       # ⚡ FAST WIPE: 15s for testing
+            interval=j_interval,  # No longer hardcoded!
+            ttl=j_ttl             # No longer hardcoded!
         )
         
-        # Link janitor to safety_guard so they can talk (Heartbeats)
         safety_guard.janitor = janitor
-        
-        # Store in bot_data and fire the task
         application.bot_data['janitor'] = janitor
         asyncio.create_task(janitor.start())
         
-        logger.info(f"🧹 [SYSTEM] Janitor patrolling: {vault_dir} (Interval: 5s, TTL: 15s)")
+        logger.info(f"🧹 [SYSTEM] Janitor patrolling: {vault_dir} (Interval: {j_interval}s, TTL: {j_ttl}s)")
         
     except Exception as e:
         logger.error(f"❌ [SYSTEM] Janitor failed to start: {e}")
