@@ -1,6 +1,5 @@
 import os
-os.environ['HF_HUB_OFFLINE'] = '1'
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
+os.environ["HF_HUB_OFFLINE"] = "0"  # Force offline mode to be OFF
 import asyncio
 import logging
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters

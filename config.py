@@ -13,9 +13,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # === TITANIUM GUARD SETTINGS (DYNAMIC) ===
 # We use env vars with defaults so you can change them without touching code
-MSG_PER_SESSION = int(os.getenv("MSG_PER_SESSION", "2"))
+MSG_PER_SESSION = int(os.getenv("MSG_PER_SESSION", "10"))
 SESSIONS_PER_PACK = int(os.getenv("SESSIONS_PER_PACK", "2"))
-RECHARGE_SECONDS = int(os.getenv("RECHARGE_SECONDS", "20"))
+RECHARGE_SECONDS = int(os.getenv("RECHARGE_SECONDS", "3600"))
 MIN_MSG_LEN = int(os.getenv("MIN_MSG_LEN", "5"))
 
 # === PATHS ===

@@ -9,7 +9,7 @@ import config
 logger = logging.getLogger("Janitor")
 
 class JanitorService:
-    def __init__(self, registry, vault_dir=None, safety_service=None, interval=5, ttl=15):
+    def __init__(self, registry, vault_dir=None, safety_service=None, interval=30, ttl=900):
         self.registry = registry          # Shared Shop Registry
         self.vault_dir = vault_dir or config.TEMP_VAULT
         self.safety_service = safety_service 
