@@ -1,8 +1,14 @@
-python-telegram-bot==20.8
+# Use the CPU-only version to avoid 2GB+ downloads
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.1+cpu
+numpy
+
+# Core Logic
 google-generativeai
 groq==0.9.0
-flask==3.0.3
 python-dotenv==1.0.1
 requests==2.32.3
-torch --index-url https://download.pytorch.org/whl/cpu
-numpy
+
+# Bot & Web
+python-telegram-bot==20.8
+flask==3.0.3
