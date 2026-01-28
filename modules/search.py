@@ -2,32 +2,35 @@ import json
 import os
 import torch
 import logging
-import google.generativeai as genai
+import time
+from pathlib import Path
+from google import genai
+from google.genai import types
 from typing import List, Dict, Any, Optional
-from dotenv import load_dotenv
+import config
 
-load_dotenv()
-
-# --- PROFESSIONAL LOGGING SETUP ---
 logger = logging.getLogger("SearchEngine")
 
 class DocumentSearch:
-    def __init__(self, vectors_path: str = "./data/vectors.jsonl"):
+    def __init__(self, shop_id: str):
         """
-        Industry-grade Vector Search using Google Gemini Embeddings (768-D).
-        Includes error recovery and memory safety.
+        Industry-grade Vector Search with Confidence Scoring.
+        Forced for 2026: v1beta, 768-D, and Cosine-to-Percentage mapping.
         """
-        # 1. API Initialization with Validation
+        self.vectors_path = config.TEMP_VAULT / shop_id / "vectors.jsonl"
+        
         self.api_key = os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
-            logger.critical("❌ GOOGLE_API_KEY missing. Vectorization will fail.")
-            raise EnvironmentError("GOOGLE_API_KEY not found in environment.")
+            logger.critical("❌ GOOGLE_API_KEY missing!")
+            raise EnvironmentError("GOOGLE_API_KEY not found.")
 
-        genai.configure(api_key=self.api_key)
-        self.model_id = "models/text-embedding-004"
+        # Client setup matches the Vectorizer
+        self.client = genai.Client(
+            api_key=self.api_key,
+            http_options={'api_version': 'v1beta'}
+        )
+        self.model_id = "gemini-embedding-001" 
         
-        # 2. Hardware-Agile Setup
-        # Use CPU for Railway/Production unless specialized hardware is detected
         self.device = torch.device("cpu")
         if torch.backends.mps.is_available():
             self.device = torch.device("mps")
@@ -36,95 +39,105 @@ class DocumentSearch:
             
         self.documents: List[Dict[str, Any]] = []
         self.vectors: Optional[torch.Tensor] = None
+        self.MAX_RETRIES = 3
         
-        # 3. Secure Loading Process
-        self._load_database(vectors_path)
+        self._load_database()
 
-    def _load_database(self, path: str):
-        """Private method to handle data loading with corruption checks."""
-        if not os.path.exists(path):
-            logger.error(f"📂 Database file missing at: {path}")
+    def _load_database(self):
+        """Loads and normalizes vectors for fast Dot Product search."""
+        if not self.vectors_path.exists():
             return
 
         vectors_list = []
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
+            with open(self.vectors_path, 'r', encoding='utf-8') as f:
+                for line in f:
                     try:
                         doc = json.loads(line)
-                        if 'vector' not in doc:
-                            logger.warning(f"⚠️ Skipping line {line_num}: No vector found.")
-                            continue
-                        
-                        vectors_list.append(doc.pop('vector'))
-                        self.documents.append(doc)
+                        if 'vector' in doc:
+                            vectors_list.append(doc.pop('vector'))
+                            self.documents.append(doc)
                     except json.JSONDecodeError:
-                        logger.error(f"❌ Corruption detected on line {line_num}. Skipping.")
-                        continue
+                        continue 
 
             if not vectors_list:
-                logger.warning("⚠️ Database loaded but contains no valid vectors.")
                 return
 
-            # Normalize vectors immediately on load for faster Dot Product search
             raw_vectors = torch.tensor(vectors_list, dtype=torch.float32)
+            
+            # 🛡️ Safety: Normalize so Dot Product = Cosine Similarity
             self.vectors = raw_vectors / raw_vectors.norm(dim=-1, keepdim=True)
             self.vectors = self.vectors.to(self.device)
             
-            logger.info(f"✅ Search Ready: {len(self.documents)} items | Device: {self.device}")
+            logger.info(f"✅ [READY] {len(self.documents)} items. Device: {self.device}")
 
         except Exception as e:
-            logger.critical(f"💥 Failed to load search database: {str(e)}")
+            logger.critical(f"💥 Database Load Failed: {e}")
 
-    def search(self, query: str, top_k: int = 3, threshold: float = 0.3) -> List[Dict[str, Any]]:
+    def _get_label(self, score: float) -> str:
+        """Categorizes the match confidence for the user."""
+        if score >= 0.85: return "🎯 High Confidence"
+        if score >= 0.70: return "✅ Good Match"
+        if score >= 0.50: return "🔍 Partial Match"
+        return "❓ Low Confidence"
+
+    def search(self, query: str, top_k: int = 3, threshold: float = 0.35) -> List[Dict[str, Any]]:
         """
-        High-performance similarity search.
-        :param query: User input string
-        :param top_k: Number of results
-        :param threshold: Minimum similarity score to return
+        Returns results with a 'score' and 'confidence_label'.
         """
-        # 1. Input Guard
-        if not query or not query.strip():
-            logger.warning("Empty query received. Returning empty list.")
+        if self.vectors is None or not self.documents:
             return []
 
-        if self.vectors is None or len(self.documents) == 0:
-            logger.error("Search attempted on empty or uninitialized database.")
+        clean_query = query.strip()
+        if not clean_query:
             return []
 
-        # 2. Cloud Vectorization with Retries
+        # 1. Embed Query with Retry Logic
+        q_values = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = self.client.models.embed_content(
+                    model=self.model_id,
+                    contents=clean_query,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_QUERY",
+                        output_dimensionality=768
+                    )
+                )
+                q_values = response.embeddings[0].values
+                break
+            except Exception as e:
+                time.sleep((attempt + 1) * 2)
+
+        if not q_values:
+            return []
+
+        # 2. Vector Search Logic
         try:
-            result = genai.embed_content(
-                model=self.model_id,
-                content=query.strip(),
-                task_type="retrieval_query"
-            )
-            q_vec = torch.tensor(result['embedding'], dtype=torch.float32).to(self.device)
-            # Normalize query
+            q_vec = torch.tensor(q_values, dtype=torch.float32).to(self.device)
+            # Normalize query vector
             q_vec = q_vec / q_vec.norm(dim=-1, keepdim=True)
             
+            with torch.no_grad():
+                # MM calculates Dot Product (Cosine Similarity since both are normalized)
+                # Equation: $$similarity = \frac{A \cdot B}{\|A\| \|B\|}$$
+                similarities = torch.mm(q_vec.unsqueeze(0), self.vectors.t()).squeeze(0)
+                
+                k = min(top_k, len(self.documents))
+                scores, indices = torch.topk(similarities, k=k)
+                
+                results = []
+                for score, idx in zip(scores.tolist(), indices.tolist()):
+                    if score >= threshold:
+                        res = self.documents[idx].copy()
+                        # Add Accuracy metrics
+                        res['score'] = round(score, 4)
+                        res['accuracy'] = f"{round(score * 100, 1)}%"
+                        res['label'] = self._get_label(score)
+                        results.append(res)
+                
+                return results
+
         except Exception as e:
-            logger.error(f"☁️ Google API failure during search: {e}")
+            logger.error(f"💥 Search Error: {e}")
             return []
-
-        # 3. Optimized Similarity Computation (Dot Product on Normalized Tensors)
-        with torch.no_grad():
-            # [1, 768] @ [768, N] -> [1, N]
-            similarities = torch.mm(q_vec.unsqueeze(0), self.vectors.t()).squeeze(0)
-            
-            # 4. Result Extraction
-            k = min(top_k, len(self.documents))
-            scores, indices = torch.topk(similarities, k=k)
-            
-            results = []
-            for score, idx in zip(scores.tolist(), indices.tolist()):
-                if score < threshold:
-                    continue  # Ignore irrelevant results
-                
-                res = self.documents[idx].copy()
-                res['score'] = round(score, 4)
-                results.append(res)
-                
-            return results
-
-# --- END OF CLASS ---

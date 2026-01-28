@@ -1,116 +1,103 @@
-import os
-os.environ["HF_HUB_OFFLINE"] = "0"  # Force offline mode to be OFF
 import asyncio
 import logging
+import os
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram import Update
 
-# Import our custom modules
+# Custom modules
 from modules.telegram_bot import SellicaBot
 from modules.safety_service import SafetyService
 from modules.janitor_service import JanitorService
-import config  # Central Source of Truth
+import config 
 
-# ==========================================
-# 🔍 PRO-LEVEL LOGGING
-# ==========================================
+# --- LOGGING SETUP ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
 )
-# Keep the logs clean by silencing library noise
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger("MainEntry")
 
-# 🛡️ GLOBAL SAFETY GUARD: Shared instance for all user limits
-# This is initialized once and passed into SellicaBot
+# 🛡️ GLOBAL SAFETY GUARD
 safety_guard = SafetyService()
 
 async def start_background_tasks(application):
-    """🧹 Starts the Janitor Service with absolute precision."""
+    """🧹 Starts the Janitor with a safety check on the engine."""
     try:
-        sellica = application.bot_data['sellica']
-        vault_dir = config.TEMP_VAULT
+        # Check if the bot engine actually initialized
+        sellica = application.bot_data.get('sellica')
+        if not sellica or not hasattr(sellica, 'manager'):
+            logger.error("🛑 [SYSTEM] Engine not found. Janitor standing down.")
+            return
 
-        # 🌍 READ FROM ENV (with safe defaults)
         j_interval = int(os.getenv("JANITOR_INTERVAL", "30"))
-        j_ttl = int(os.getenv("JANITOR_TTL", "900")) # 900s = 15m
+        j_ttl = int(os.getenv("JANITOR_TTL", "900"))
 
-        # 🔥 THE TITANIUM WIRING (Updated to use variables):
         janitor = JanitorService(
             registry=sellica.manager.registry, 
-            vault_dir=vault_dir,
             safety_service=safety_guard, 
-            interval=j_interval,  # No longer hardcoded!
-            ttl=j_ttl             # No longer hardcoded!
+            interval=j_interval,
+            ttl=j_ttl
         )
         
         safety_guard.janitor = janitor
         application.bot_data['janitor'] = janitor
         asyncio.create_task(janitor.start())
         
-        logger.info(f"🧹 [SYSTEM] Janitor patrolling: {vault_dir} (Interval: {j_interval}s, TTL: {j_ttl}s)")
+        logger.info(f"🧹 [SYSTEM] Janitor patrolling: {config.TEMP_VAULT} (Interval: {j_interval}s)")
         
     except Exception as e:
-        logger.error(f"❌ [SYSTEM] Janitor failed to start: {e}")
+        logger.error(f"❌ [SYSTEM] Janitor failed: {e}")
+
+async def error_handler(update: object, context):
+    """📡 SYSTEM WATCHDOG: Catches API timeouts and crashes."""
+    logger.error(f"⚠️ [CRASH] Update {update} caused error: {context.error}")
+    # Optional: Send a 'System Busy' message to the user if update is a Message
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("🚧 System is a bit overloaded. Give me a second!")
 
 async def reset_command(update, context):
     """🛠️ GOD MODE: Total wipe for testing."""
-    user_id = update.effective_user.id
-    uid = str(user_id)
-    
+    uid = str(update.effective_user.id)
     if uid in safety_guard.user_data:
-        # Wipes everything: msg count, session count, AND the timer
         del safety_guard.user_data[uid]
         safety_guard._save_data()
-        
-        # Clear shop selection from Telegram's context memory
         context.user_data.clear() 
-        
-        await update.message.reply_text("🧹 [DEBUG] Registry & Timer wiped. You are a ghost now. Use /start!")
-        logger.info(f"🗑️ [DEBUG] Manual wipe performed for user {uid}")
+        await update.message.reply_text("🧹 [DEBUG] Registry & Timer wiped. Go again!")
     else:
-        await update.message.reply_text("🤷‍♂️ No registry data found for your ID.")
+        await update.message.reply_text("🤷‍♂️ Nothing to wipe.")
 
 def main():
     logger.info(f"🚀 {config.BOT_NAME}: System Booting...")
 
-    # 1. Check for critical keys
-    if not config.TELEGRAM_TOKEN:
-        logger.critical("❌ [FATAL] TELEGRAM_TOKEN is missing from .env or config!")
+    # 1. Initialize Bot Engine
+    try:
+        sellica_engine = SellicaBot(safety_guard=safety_guard)
+    except Exception as e:
+        logger.critical(f"❌ [FATAL] Engine failed to start: {e}")
         return
 
-    # 2. Initialize Bot Engine
-    # We pass the shared safety_guard here so the bot can check message limits
-    sellica_engine = SellicaBot(safety_guard=safety_guard)
-
-    # 3. Build Application
+    # 2. Build Application
     app = ApplicationBuilder() \
         .token(config.TELEGRAM_TOKEN) \
         .post_init(start_background_tasks) \
         .build()
     
-    # Store engine in bot_data for the Janitor to access
     app.bot_data['sellica'] = sellica_engine
 
-    # 4. HANDLERS (Priority Order)
-    # /resetme is first so it always works even if the bot is "stuck"
+    # 3. GLOBAL ERROR CATCHER
+    app.add_error_handler(error_handler)
+
+    # 4. HANDLERS
     app.add_handler(CommandHandler("resetme", reset_command)) 
     app.add_handler(CommandHandler("start", sellica_engine.start_command))
-    
-    # Handles shop selection buttons
     app.add_handler(CallbackQueryHandler(sellica_engine.shop_button_callback))
-    
-    # The message handler runs the 'check_access' logic inside sellica_engine.handle_message
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), sellica_engine.handle_message))
 
-    logger.info(f"🚀 [LIVE] {config.BOT_NAME} is fully shielded and online.")
+    logger.info(f"🚀 [LIVE] {config.BOT_NAME} online.")
     
-    try:
-        # drop_pending_updates=True prevents the bot from spamming old messages on restart
-        app.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        logger.critical(f"🛑 [CRASH] System failure: {e}")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
