@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import traceback  # 🔍 Added for deep tracing
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from telegram import Update
 
@@ -15,6 +16,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
 )
+# Keep the noise down but keep our logs loud
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger("MainEntry")
@@ -25,7 +27,6 @@ safety_guard = SafetyService()
 async def start_background_tasks(application):
     """🧹 Starts the Janitor with a safety check on the engine."""
     try:
-        # Check if the bot engine actually initialized
         sellica = application.bot_data.get('sellica')
         if not sellica or not hasattr(sellica, 'manager'):
             logger.error("🛑 [SYSTEM] Engine not found. Janitor standing down.")
@@ -51,15 +52,24 @@ async def start_background_tasks(application):
         logger.error(f"❌ [SYSTEM] Janitor failed: {e}")
 
 async def error_handler(update: object, context):
-    """📡 SYSTEM WATCHDOG: Catches API timeouts and crashes."""
-    logger.error(f"⚠️ [CRASH] Update {update} caused error: {context.error}")
-    # Optional: Send a 'System Busy' message to the user if update is a Message
+    """📡 SYSTEM WATCHDOG: This is where we catch the 'Empty Message' ghost."""
+    # 🕵️‍♂️ TRACEBACK INJECTION
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    
+    logger.error(f"🔥 [CRITICAL ERROR] Update {update} caused error: {context.error}")
+    logger.error(f"📑 [FULL TRACEBACK]:\n{tb_string}") # This tells us the EXACT line in SellicaBot
+
     if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text("🚧 System is a bit overloaded. Give me a second!")
+        try:
+            await update.effective_message.reply_text("🚧 System is a bit overloaded or hit a logic leak. Try again in a sec, bruh.")
+        except:
+            pass # If the message itself is the error, we can't reply
 
 async def reset_command(update, context):
     """🛠️ GOD MODE: Total wipe for testing."""
     uid = str(update.effective_user.id)
+    logger.info(f"🧹 [RESET] User {uid} triggered a wipe.")
     if uid in safety_guard.user_data:
         del safety_guard.user_data[uid]
         safety_guard._save_data()
@@ -74,8 +84,10 @@ def main():
     # 1. Initialize Bot Engine
     try:
         sellica_engine = SellicaBot(safety_guard=safety_guard)
+        logger.info("✅ [INIT] Sellica Engine Loaded.")
     except Exception as e:
         logger.critical(f"❌ [FATAL] Engine failed to start: {e}")
+        logger.critical(traceback.format_exc()) # Log why it failed to boot
         return
 
     # 2. Build Application
@@ -93,9 +105,11 @@ def main():
     app.add_handler(CommandHandler("resetme", reset_command)) 
     app.add_handler(CommandHandler("start", sellica_engine.start_command))
     app.add_handler(CallbackQueryHandler(sellica_engine.shop_button_callback))
+    
+    # This is the "Main Pipe" - we'll watch this closely
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), sellica_engine.handle_message))
 
-    logger.info(f"🚀 [LIVE] {config.BOT_NAME} online.")
+    logger.info(f"🚀 [LIVE] {config.BOT_NAME} online. Ready for cargo queries.")
     
     app.run_polling(drop_pending_updates=True)
 

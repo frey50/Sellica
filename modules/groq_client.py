@@ -1,23 +1,35 @@
-# modules/groq_client.py
 import time
+import logging
+import traceback
 from groq import Groq
 from config import GROQ_API_KEY, DEBUG_MODE
 
+# 🎯 Link to our central logging system
+logger = logging.getLogger("GroqClient")
+
 class GroqClient:
     def __init__(self):
+        # 🛡️ Level 1: Key Validation
         if not GROQ_API_KEY:
+            logger.critical("❌ [FATAL] GROQ_API_KEY is missing! Engine cannot start.")
             raise ValueError("[ERROR] GROQ_API_KEY is missing in config.py!")
         
-        self.client = Groq(api_key=GROQ_API_KEY)
-        # Using the Balanced Beast: Llama 3.3 70B
-        self.model = "llama-3.3-70b-versatile" 
-
-        if DEBUG_MODE:
-            print(f"\n[DEBUG] Groq: Client Live. Engine: {self.model}")
+        try:
+            self.client = Groq(api_key=GROQ_API_KEY)
+            self.model = "llama-3.3-70b-versatile" 
+            logger.info(f"✅ [INIT] Groq Engine Live: {self.model}")
+        except Exception as e:
+            logger.error(f"❌ [INIT] Groq Client failed to instantiate: {e}")
+            raise
 
     def generate_response(self, prompt):    
+        # 🛡️ Level 2: Input Validation
+        if not prompt or len(prompt.strip()) == 0:
+            logger.warning("⚠️ [EMPTY_PROMPT] Received an empty prompt. Skipping AI call.")
+            return "Yo bruh, the prompt was empty. I need something to work with!"
+
         if DEBUG_MODE:
-            print(f"\n[DEBUG] Groq: Sending prompt ({len(prompt)} chars)...")
+            logger.info(f"📡 [DEBUG] Sending prompt to Groq ({len(prompt)} chars)...")
             start_time = time.time()
 
         try:
@@ -29,15 +41,18 @@ class GroqClient:
                 stream=False
             )
 
-            answer = completion.choices[0].message.content
+            # 🛡️ Level 3: Extraction & Null-Check
+            if not completion.choices or not completion.choices[0].message.content:
+                logger.error("🚨 [EMPTY_RESPONSE] Groq returned a successful status but ZERO content.")
+                return "⚠️ AI Error: The engine returned a blank response. Try again, bruh."
+
+            answer = completion.choices[0].message.content.strip()
             
+            # 📊 INDUSTRIAL TELEMETRY
             if DEBUG_MODE:
                 latency = time.time() - start_time
                 usage = completion.usage
                 total_tokens = usage.total_tokens
-                
-                # Industrial Efficiency Calculation
-                # Let's see if the prompt is taking up more than 80% of our tokens
                 ratio = (usage.prompt_tokens / total_tokens) * 100 if total_tokens > 0 else 0
                 
                 print(f"\n{'='*20} TOKEN STATS {'='*20}")
@@ -47,29 +62,23 @@ class GroqClient:
                 print(f"⏱️ Speed:           {usage.completion_tokens / latency:.1f} tokens/sec")
                 print(f"{'='*53}\n")
                     
-                return answer.strip()
+            return answer
 
         except Exception as e:
-            # This caught the error last time, now it will be clean!
-            print(f"\n[ERROR] Groq API fail: {e}")
-            return "Kechirasiz, tizimda biroz uzilish bo'ldi. (AI Offline)"
+            # 🛡️ Level 4: The "Cold" Traceback
+            # This captures if it's a Rate Limit, Auth Error, or Connection Issue
+            error_details = traceback.format_exc()
+            logger.error(f"💥 [GROQ_FAIL]: {str(e)}")
+            logger.debug(f"📑 FULL TRACEBACK:\n{error_details}")
+            
+            # Return a useful fallback so Telegram doesn't crash
+            return "🚧 AI connection snagged. My brain is a bit foggy—try that again in a second!"
 
 # --- SURGICAL TEST ---
 if __name__ == "__main__":
-    # Test with a fake "Sandwich" like the one from our Builder
-    test_sandwich = """
-    You are Sellica, a chill shop assistant. 
-    <context>Question: Price | Answer: 50$</context>
-    User: How much is it?
-    Sellica:"""
-    
+    test_sandwich = "User: Hello! Sellica:"
     print("="*40)
     print("RUNNING GROQ CLIENT TEST...")
-    print("="*40)
-    
     bot = GroqClient()
     response = bot.generate_response(test_sandwich)
-    
-    print("\n--- SELLICA'S VOICE ---")
-    print(response)
-    print("="*40)
+    print(f"\n--- SELLICA'S VOICE ---\n{response}\n" + "="*40)

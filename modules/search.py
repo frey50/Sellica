@@ -3,12 +3,14 @@ import os
 import torch
 import logging
 import time
+import traceback
 from pathlib import Path
 from google import genai
 from google.genai import types
 from typing import List, Dict, Any, Optional
 import config
 
+# 🎯 Centralized Logging
 logger = logging.getLogger("SearchEngine")
 
 class DocumentSearch:
@@ -17,20 +19,27 @@ class DocumentSearch:
         Industry-grade Vector Search with Confidence Scoring.
         Forced for 2026: v1beta, 768-D, and Cosine-to-Percentage mapping.
         """
+        self.shop_id = shop_id
         self.vectors_path = config.TEMP_VAULT / shop_id / "vectors.jsonl"
         
         self.api_key = os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
-            logger.critical("❌ GOOGLE_API_KEY missing!")
+            logger.critical(f"❌ [AUTH] GOOGLE_API_KEY missing for search in {shop_id}!")
             raise EnvironmentError("GOOGLE_API_KEY not found.")
 
         # Client setup matches the Vectorizer
-        self.client = genai.Client(
-            api_key=self.api_key,
-            http_options={'api_version': 'v1beta'}
-        )
-        self.model_id = "gemini-embedding-001" 
-        
+        try:
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options={'api_version': 'v1beta'}
+            )
+            self.model_id = "gemini-embedding-001" 
+            logger.info(f"✅ [INIT] Search Engine ready for {shop_id} using {self.model_id}")
+        except Exception as e:
+            logger.error(f"💥 [INIT_FAIL] GenAI Client error: {e}")
+            raise
+
+        # Device Auto-Detection
         self.device = torch.device("cpu")
         if torch.backends.mps.is_available():
             self.device = torch.device("mps")
@@ -46,6 +55,7 @@ class DocumentSearch:
     def _load_database(self):
         """Loads and normalizes vectors for fast Dot Product search."""
         if not self.vectors_path.exists():
+            logger.warning(f"⚠️ [MISSING] No vectors found at {self.vectors_path}")
             return
 
         vectors_list = []
@@ -61,18 +71,21 @@ class DocumentSearch:
                         continue 
 
             if not vectors_list:
+                logger.error(f"🚨 [EMPTY_FILE] {self.vectors_path} contains no valid vectors.")
                 return
 
+            # 📍 JUNCTION: Tensor Preparation
             raw_vectors = torch.tensor(vectors_list, dtype=torch.float32)
             
             # 🛡️ Safety: Normalize so Dot Product = Cosine Similarity
             self.vectors = raw_vectors / raw_vectors.norm(dim=-1, keepdim=True)
             self.vectors = self.vectors.to(self.device)
             
-            logger.info(f"✅ [READY] {len(self.documents)} items. Device: {self.device}")
+            logger.info(f"✅ [READY] Loaded {len(self.documents)} items into {self.device} memory.")
 
         except Exception as e:
-            logger.critical(f"💥 Database Load Failed: {e}")
+            logger.critical(f"💥 [DB_LOAD_FAIL] {self.shop_id}: {e}")
+            logger.debug(traceback.format_exc())
 
     def _get_label(self, score: float) -> str:
         """Categorizes the match confidence for the user."""
@@ -85,7 +98,9 @@ class DocumentSearch:
         """
         Returns results with a 'score' and 'confidence_label'.
         """
+        # 🛡️ Guard 1: Empty Registry
         if self.vectors is None or not self.documents:
+            logger.warning(f"⚠️ [SEARCH_VOID] No vectors loaded for {self.shop_id}. Returning empty results.")
             return []
 
         clean_query = query.strip()
@@ -94,6 +109,8 @@ class DocumentSearch:
 
         # 1. Embed Query with Retry Logic
         q_values = None
+        logger.info(f"📡 [EMBED] Generating vector for query: '{clean_query[:30]}...'")
+        
         for attempt in range(self.MAX_RETRIES):
             try:
                 response = self.client.models.embed_content(
@@ -107,37 +124,49 @@ class DocumentSearch:
                 q_values = response.embeddings[0].values
                 break
             except Exception as e:
+                logger.error(f"🔄 [RETRY {attempt+1}] Embedding failed: {e}")
+                if attempt == self.MAX_RETRIES - 1:
+                    logger.critical("❌ [EMBED_FAIL] All retries exhausted.")
+                    return []
                 time.sleep((attempt + 1) * 2)
-
-        if not q_values:
-            return []
 
         # 2. Vector Search Logic
         try:
             q_vec = torch.tensor(q_values, dtype=torch.float32).to(self.device)
-            # Normalize query vector
+            
+            # 🛡️ Guard 2: Dimension Check
+            if q_vec.shape[0] != 768:
+                logger.error(f"🚨 [DIM_MISMATCH] Query vector is {q_vec.shape[0]}D, but manifest is 768D.")
+                return []
+
+            # Normalize query vector for Cosine Similarity
             q_vec = q_vec / q_vec.norm(dim=-1, keepdim=True)
             
             with torch.no_grad():
-                # MM calculates Dot Product (Cosine Similarity since both are normalized)
-                # Equation: $$similarity = \frac{A \cdot B}{\|A\| \|B\|}$$
+                # Similarity Calculation: $$similarity = \frac{A \cdot B}{\|A\| \|B\|}$$
+                # Since both are normalized, it simplifies to Dot Product.
                 similarities = torch.mm(q_vec.unsqueeze(0), self.vectors.t()).squeeze(0)
                 
                 k = min(top_k, len(self.documents))
                 scores, indices = torch.topk(similarities, k=k)
                 
                 results = []
+                logger.info(f"🧐 [MATH] Top score for '{self.shop_id}': {scores[0].item():.4f}")
+
                 for score, idx in zip(scores.tolist(), indices.tolist()):
                     if score >= threshold:
                         res = self.documents[idx].copy()
-                        # Add Accuracy metrics
                         res['score'] = round(score, 4)
                         res['accuracy'] = f"{round(score * 100, 1)}%"
                         res['label'] = self._get_label(score)
                         results.append(res)
                 
+                if not results:
+                    logger.warning(f"🔍 [NO_MATCH] Best score {scores[0].item():.4f} was below threshold {threshold}")
+                
                 return results
 
         except Exception as e:
-            logger.error(f"💥 Search Error: {e}")
+            logger.error(f"💥 [SEARCH_CRASH] Mathematical error during top-k: {e}")
+            logger.debug(traceback.format_exc())
             return []
