@@ -40,7 +40,7 @@ class SellicaBot:
         # 2. 🛡️ TIER 2 SAFETY: Context Check
         if not shop_id:
             logger.warning(f"❓ [NO_SHOP] User {user_id} messaged without selecting a shop.")
-            await update.message.reply_text("Please select a shop first! 🏪 Use /start.")
+            await update.message.reply_text("Iltimos, avval do'konni tanlang! 🏪 /start dan foydalaning.")
             return
 
         try:
@@ -71,7 +71,7 @@ class SellicaBot:
             # This is where we prevent the Telegram crash
             if not response or str(response).strip() == "":
                 logger.error("🚨 [CRITICAL] AI returned an empty string! Intercepting crash.")
-                response = "⚠️ Yo bruh, the AI engine is silent. I searched the manifest but couldn't generate a reply. Try rephrasing!"
+                response = "⚠️ Ey birodar, AI dvigateli jim. Men manifestni qidirdim, lekin javob yarata olmadim. Qayta ifodalashga harakat qiling!"
 
             await update.message.reply_text(response)
             logger.info(f"📤 [SUCCESS] Reply sent to user {user_id}")
@@ -80,7 +80,7 @@ class SellicaBot:
             # Capture the full crime scene
             error_trace = traceback.format_exc()
             logger.error(f"💥 [PIPELINE CRASH]: {e}\n{error_trace}")
-            await update.message.reply_text("😵 I hit a snag in my logic pipe. Try again, bruh!")
+            await update.message.reply_text("😵 Mantiqiy quvurimda xatolikka duch keldim. Qayta urinib ko'ring, birodar!")
 
         finally:
             if shop_id in self.manager.registry:
@@ -101,20 +101,20 @@ class SellicaBot:
             available_shops = list_remote_shops()
             if not available_shops:
                 logger.error("❌ [LOADER] No shops discovered on GitHub.")
-                await update.message.reply_text(f"🛡️ {safety_msg}\n\n❌ No shop portals found.")
+                await update.message.reply_text(f"🛡️ {safety_msg}\n\n❌ Do'kon portallari topilmadi.")
                 return
         
             keyboard = [[InlineKeyboardButton(f"🏪 {s.replace('_', ' ')}", callback_data=f"slct:{s}")] for s in available_shops]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"🛡️ {safety_msg}\n\n🚀 *Sellica Multi-Shop Portal* active.\nSelect a shop:",
+                f"🛡️ {safety_msg}\n\n🚀 *Sellica Multi-Shop Portal* faol.\nDo'konni tanlang:",
                 reply_markup=reply_markup, 
                 parse_mode='Markdown'
             )
         except Exception as e:
             logger.error(f"FATAL in start_command: {e}")
-            await update.message.reply_text("⚠️ [System Error] Portal offline.")
+            await update.message.reply_text("⚠️ [Tizim xatosi] Portal oflayn.")
 
     async def shop_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -122,7 +122,7 @@ class SellicaBot:
         try:
             shop_id = query.data.split(":")[1]
             logger.info(f"🔌 [CONNECTING] User selecting shop: {shop_id}")
-            await query.edit_message_text(text=f"⚙️ Powering up {shop_id.replace('_', ' ')}...")
+            await query.edit_message_text(text=f"⚙️ '{shop_id.replace('_', ' ')}' yoqilmoqda...")
             
             await self.manager.get_searcher(shop_id)
             context.user_data['current_shop'] = shop_id
@@ -130,7 +130,7 @@ class SellicaBot:
             if self.safety_guard.janitor:
                 self.safety_guard.janitor.touch_shop(shop_id)
             
-            await query.edit_message_text(text=f"✅ Portal Active: {shop_id}\nAsk me anything about the stock!")
+            await query.edit_message_text(text=f"✅ Portal faol: '{shop_id}'\nStok haqida istalgan narsani so'rang!")
         except Exception as e:
             logger.error(f"Callback error: {e}")
-            await query.edit_message_text(text="❌ Error loading shop data.")
+            await query.edit_message_text(text="❌ Do'kon ma'lumotlarini yuklashda xatolik.")
