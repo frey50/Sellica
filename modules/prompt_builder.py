@@ -10,7 +10,7 @@ class PromptBuilder:
     def build(self, user_query, search_results, shop_name="General Shop", score_threshold=0.32):
         # 🛡️ 1. INITIALIZE DEFAULTS (No more UnboundLocalError)
         content = "No details available."
-        system_base = f"You are Sellica, AI for {shop_name}. Use ONLY context. Match user language."
+        system_base = f"You are Sellica, AI for {shop_name}. You are a helpful shop assistant. If the user speaks Uzbek, reply in clear, simple Uzbek. Do not use English words unless they are product names. If you don't know the answer in Uzbek, say: 'Hozircha buni bilmayman, lekin managerga xabar berdim' (I don't know this yet, but I've informed the manager)."
         relevant_blocks = []
 
         try:
